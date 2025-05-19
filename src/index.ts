@@ -31,11 +31,32 @@ app.listen(PORT, () => {
 
 // Создание клиента Redis
 const redisClient = createClient({
-  url: REDIS_URL
+  url: REDIS_URL,
+  socket: {
+    reconnectStrategy: (retries) => {
+      if (retries > 10) {
+        console.error('Превышено максимальное количество попыток подключения к Redis');
+        return new Error('Превышено максимальное количество попыток');
+      }
+      // Увеличиваем время между попытками
+      return Math.min(retries * 1000, 10000);
+    }
+  }
 });
 
 // Обработка ошибок Redis
-redisClient.on('error', (err) => console.error('Redis Client Error:', err));
+redisClient.on('error', (err) => {
+  console.error('Redis Client Error:', err);
+  // Не завершаем процесс при ошибке Redis
+});
+
+redisClient.on('connect', () => {
+  console.log('Успешное подключение к Redis');
+});
+
+redisClient.on('reconnecting', () => {
+  console.log('Переподключение к Redis...');
+});
 
 // Создание экземпляра бота
 if (!TELEGRAM_TOKEN) {
@@ -106,40 +127,72 @@ const markShowAsSent = async (show: Show): Promise<void> => {
 
 const checkNewShows = async (): Promise<void> => {
   try {
+    console.log('🔄 Начинаю парсинг афиши...');
     const shows = await parseShows();
+    console.log(`📊 Найдено ${shows.length} спектаклей`);
 
+    let newShows = 0;
     for (const show of shows) {
       if (!(await isShowSent(show))) {
+        console.log(`🎭 Новый спектакль: ${show.name} (${show.date} ${show.time})`);
         await sendTelegramMessage(show);
         await markShowAsSent(show);
+        newShows++;
       }
     }
+
+    if (newShows > 0) {
+      console.log(`✨ Отправлено ${newShows} новых уведомлений`);
+    } else {
+      console.log('ℹ️ Новых спектаклей не найдено');
+    }
   } catch (error) {
-    console.error('Ошибка при проверке новых афиш:', error);
+    console.error('❌ Ошибка при проверке новых афиш:', error);
   }
 };
 
 // Основной цикл проверки
 const startMonitoring = async (): Promise<void> => {
   try {
-    // Подключение к Redis
-    await redisClient.connect();
-    console.log('Подключение к Redis установлено');
+    // Подключение к Redis с повторными попытками
+    let retries = 0;
+    const maxRetries = 5;
+
+    while (retries < maxRetries) {
+      try {
+        await redisClient.connect();
+        console.log('Подключение к Redis установлено');
+        break;
+      } catch (error) {
+        retries++;
+        console.error(`Ошибка подключения к Redis (попытка ${retries}/${maxRetries}):`, error);
+        if (retries === maxRetries) {
+          throw new Error('Не удалось подключиться к Redis после нескольких попыток');
+        }
+        // Ждем перед следующей попыткой
+        await new Promise(resolve => setTimeout(resolve, 5000));
+      }
+    }
 
     console.log('Бот запущен и начал мониторинг афиши...');
 
     while (true) {
-      await checkNewShows();
+      try {
+        await checkNewShows();
+        console.log(`⏳ Следующая проверка через ${CHECK_INTERVAL / 1000 / 60} минут...`);
+      } catch (error) {
+        console.error('❌ Ошибка при проверке новых афиш:', error);
+      }
       await new Promise(resolve => setTimeout(resolve, CHECK_INTERVAL));
     }
   } catch (error) {
-    console.error('Критическая ошибка:', error);
+    console.error('❌ Критическая ошибка:', error);
     process.exit(1);
   }
 };
 
 // Запуск бота
 startMonitoring().catch(error => {
-  console.error('Критическая ошибка:', error);
+  console.error('❌ Критическая ошибка:', error);
   process.exit(1);
 }); 
