@@ -177,6 +177,19 @@ const checkNewShows = async (): Promise<void> => {
     console.log('🔄 Начинаю парсинг афиши...');
     const shows = await parseShows();
     console.log(`📊 Найдено ${shows.length} спектаклей`);
+    if (shows.length === 0) {
+      console.warn('⚠️ Сайт вернул пустой список афиш. Возможно, изменилась структура страницы.');
+    } else {
+      const first = shows[0];
+      const last = shows[shows.length - 1];
+      console.log(`🧭 Первая афиша на странице: ${first.date} ${first.time} — ${first.name}`);
+      console.log(`🏁 Последняя афиша на странице: ${last.date} ${last.time} — ${last.name}`);
+      const sample = shows
+        .slice(0, Math.min(3, shows.length))
+        .map(s => `${s.date} ${s.time} — ${s.name}`)
+        .join(' | ');
+      console.log(`🔎 Пример первых афиш: ${sample}`);
+    }
 
     let newShows = 0;
     for (const show of shows) {
