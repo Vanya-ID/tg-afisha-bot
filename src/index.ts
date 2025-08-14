@@ -15,6 +15,8 @@ const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
 const URL = 'https://puppet-minsk.by/afisha';
 const CHECK_INTERVAL = 2 * 60 * 1000; // 2 минуты в миллисекундах
 const PORT = process.env.PORT || 3000;
+const HEARTBEAT_HOUR = Number(process.env.HEARTBEAT_HOUR || 9);
+const HEARTBEAT_MINUTE = Number(process.env.HEARTBEAT_MINUTE || 0);
 
 // Создание Express приложения
 const app = express();
@@ -114,6 +116,51 @@ const sendTelegramMessage = async (show: Show): Promise<void> => {
   }
 };
 
+const sendHeartbeatMessage = async (): Promise<void> => {
+  if (!TELEGRAM_CHAT_ID) {
+    throw new Error('TELEGRAM_CHAT_ID не найден в переменных окружения');
+  }
+
+  try {
+    const now = new Date();
+    const timeLabel = now.toLocaleString('ru-RU', { timeZone: 'Europe/Minsk' });
+    const message = `✅ Бот работает\n🕒 ${timeLabel}`;
+    await bot.sendMessage(TELEGRAM_CHAT_ID, message);
+  } catch (error) {
+    console.error('Ошибка при отправке ежедневного сообщения в Telegram:', error);
+  }
+};
+
+const getIsoDate = (date: Date): string => {
+  return date.toISOString().slice(0, 10);
+};
+
+const isHeartbeatSent = async (isoDate: string): Promise<boolean> => {
+  const key = `heartbeat|${isoDate}`;
+  const result = await redisClient.get(key);
+  return result !== null;
+};
+
+const markHeartbeatSent = async (isoDate: string): Promise<void> => {
+  const key = `heartbeat|${isoDate}`;
+  await redisClient.set(key, 'sent', { EX: 60 * 60 * 24 * 60 });
+};
+
+const sendDailyHeartbeatIfDue = async (): Promise<void> => {
+  const now = new Date();
+  const isoDate = getIsoDate(now);
+
+  const alreadySent = await isHeartbeatSent(isoDate);
+  if (alreadySent) return;
+
+  const isAfterScheduledTime = now.getHours() > HEARTBEAT_HOUR || (now.getHours() === HEARTBEAT_HOUR && now.getMinutes() >= HEARTBEAT_MINUTE);
+  if (!isAfterScheduledTime) return;
+
+  await sendHeartbeatMessage();
+  await markHeartbeatSent(isoDate);
+  console.log('✔️ Отправлено ежедневное сообщение о работоспособности');
+};
+
 const isShowSent = async (show: Show): Promise<boolean> => {
   const key = `${show.date}|${show.time}|${show.name}|${show.url}`;
   const result = await redisClient.get(key);
@@ -179,6 +226,7 @@ const startMonitoring = async (): Promise<void> => {
     while (true) {
       try {
         await checkNewShows();
+        await sendDailyHeartbeatIfDue();
         console.log(`⏳ Следующая проверка через ${CHECK_INTERVAL / 1000 / 60} минут...`);
       } catch (error) {
         console.error('❌ Ошибка при проверке новых афиш:', error);
