@@ -13,6 +13,7 @@ const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
 const URL = 'https://puppet-minsk.by/afisha';
+const ALT_URL = 'https://puppet-minsk.by/bilety/afisha';
 const CHECK_INTERVAL = 2 * 60 * 1000; // 2 минуты в миллисекундах
 const PORT = process.env.PORT || 3000;
 const HEARTBEAT_HOUR = 9;
@@ -116,6 +117,18 @@ const sendTelegramMessage = async (show: Show): Promise<void> => {
   }
 };
 
+const sendTextMessage = async (text: string): Promise<void> => {
+  if (!TELEGRAM_CHAT_ID) {
+    throw new Error('TELEGRAM_CHAT_ID не найден в переменных окружения');
+  }
+
+  try {
+    await bot.sendMessage(TELEGRAM_CHAT_ID, text);
+  } catch (error) {
+    console.error('Ошибка при отправке текстового сообщения в Telegram:', error);
+  }
+};
+
 const sendHeartbeatMessage = async (): Promise<void> => {
   if (!TELEGRAM_CHAT_ID) {
     throw new Error('TELEGRAM_CHAT_ID не найден в переменных окружения');
@@ -128,6 +141,50 @@ const sendHeartbeatMessage = async (): Promise<void> => {
     await bot.sendMessage(TELEGRAM_CHAT_ID, message);
   } catch (error) {
     console.error('Ошибка при отправке ежедневного сообщения в Telegram:', error);
+  }
+};
+
+const parseShowsFromAlt = async (): Promise<Show[]> => {
+  try {
+    const response = await axios.get(ALT_URL);
+    const $ = cheerio.load(response.data);
+    const shows: Show[] = [];
+
+    $('table tr').each((_, row) => {
+      const headerCells = $(row).find('th');
+      if (headerCells.length > 0) return;
+      const tds = $(row).find('td');
+      if (tds.length < 2) return;
+
+      const dateTimeRaw = $(tds[0]).text().trim();
+      const name = $(tds[1]).text().trim();
+      const href = $(tds[1]).find('a').attr('href') || '';
+
+      if (!dateTimeRaw || !name) return;
+
+      let date = '';
+      let time = '';
+      const match = dateTimeRaw.match(/(\d{2}\.\d{2}\.\d{4})\s+(\d{2}:\d{2})/);
+      if (match) {
+        date = match[1];
+        time = match[2];
+      } else {
+        // Если не удалось разделить дату/время, оставляем как есть в поле date
+        date = dateTimeRaw;
+      }
+
+      let url = href;
+      if (url && !/^https?:/i.test(url)) {
+        url = `https://puppet-minsk.by${url}`;
+      }
+
+      shows.push({ date, time, name, url });
+    });
+
+    return shows;
+  } catch (error) {
+    console.error('Ошибка при парсинге альтернативной страницы афиши:', error);
+    return [];
   }
 };
 
@@ -175,21 +232,30 @@ const markShowAsSent = async (show: Show): Promise<void> => {
 const checkNewShows = async (): Promise<void> => {
   try {
     console.log('🔄 Начинаю парсинг афиши...');
-    const shows = await parseShows();
-    console.log(`📊 Найдено ${shows.length} спектаклей`);
+    let shows = await parseShows();
+    let fromAlt = false;
     if (shows.length === 0) {
-      console.warn('⚠️ Сайт вернул пустой список афиш. Возможно, изменилась структура страницы.');
-    } else {
-      const first = shows[0];
-      const last = shows[shows.length - 1];
-      console.log(`🧭 Первая афиша на странице: ${first.date} ${first.time} — ${first.name}`);
-      console.log(`🏁 Последняя афиша на странице: ${last.date} ${last.time} — ${last.name}`);
-      const sample = shows
-        .slice(0, Math.min(3, shows.length))
-        .map(s => `${s.date} ${s.time} — ${s.name}`)
-        .join(' | ');
-      console.log(`🔎 Пример первых афиш: ${sample}`);
+      console.warn('⚠️ Основная страница афиши вернула пустой список. Пробую альтернативную страницу...');
+      const altShows = await parseShowsFromAlt();
+      if (altShows.length === 0) {
+        console.warn('⚠️ Альтернативная страница афиши тоже пустая');
+        await sendTextMessage(`⚠️ Афиша пуста на обеих страницах.\n🔗 ${URL}\n🔗 ${ALT_URL}`);
+        return;
+      }
+      shows = altShows;
+      fromAlt = true;
     }
+
+    console.log(`📊 Найдено ${shows.length} спектаклей${fromAlt ? ' (альтернативная страница)' : ''}`);
+    const first = shows[0];
+    const last = shows[shows.length - 1];
+    console.log(`🧭 Первая афиша на странице: ${first.date} ${first.time} — ${first.name}`);
+    console.log(`🏁 Последняя афиша на странице: ${last.date} ${last.time} — ${last.name}`);
+    const sample = shows
+      .slice(0, Math.min(3, shows.length))
+      .map(s => `${s.date} ${s.time} — ${s.name}`)
+      .join(' | ');
+    console.log(`🔎 Пример первых афиш: ${sample}`);
 
     let newShows = 0;
     for (const show of shows) {
