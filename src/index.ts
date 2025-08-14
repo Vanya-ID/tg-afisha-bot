@@ -15,8 +15,8 @@ const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
 const URL = 'https://puppet-minsk.by/afisha';
 const CHECK_INTERVAL = 2 * 60 * 1000; // 2 минуты в миллисекундах
 const PORT = process.env.PORT || 3000;
-const HEARTBEAT_HOUR = Number(process.env.HEARTBEAT_HOUR || 9);
-const HEARTBEAT_MINUTE = Number(process.env.HEARTBEAT_MINUTE || 0);
+const HEARTBEAT_HOUR = 9;
+const HEARTBEAT_MINUTE = 0;
 
 // Создание Express приложения
 const app = express();
